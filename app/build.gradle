@@ -1,6 +1,5 @@
 plugins {
     id 'com.android.application'
-    id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
@@ -10,7 +9,7 @@ def keystorePath = System.getenv('LIQUID_KEYSTORE')
 
 android {
     namespace 'com.yehu.liquid'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.yehu.liquid'
@@ -58,12 +57,6 @@ android {
 
     buildFeatures {
         compose true
-    }
-}
-
-kotlin {
-    compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
