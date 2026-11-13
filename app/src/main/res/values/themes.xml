@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fondo de arranque claro, para que no se vea otro color al abrir -->
+    <style name="Theme.Liquid" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/liquid_fondo</item>
+    </style>
+    <color name="liquid_fondo">#FFF3F4F8</color>
+    <color name="liquid_icono_fondo">#FFEAF2FF</color>
+</resources>

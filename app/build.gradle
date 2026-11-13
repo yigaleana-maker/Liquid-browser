@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+// Firma: si el repositorio tiene los secretos LIQUID_* (ver README), el APK de release se firma
+// con tu llave fija y las actualizaciones se instalan encima. Si no, se firma con la de depuración.
+def keystorePath = System.getenv('LIQUID_KEYSTORE')
+
+android {
+    namespace 'com.yehu.liquid'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.yehu.liquid'
+        minSdk 29
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('LIQUID_STORE_PASSWORD')
+                keyAlias System.getenv('LIQUID_KEY_ALIAS')
+                keyPassword System.getenv('LIQUID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig(keystorePath ? signingConfigs.release : signingConfigs.debug)
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    buildFeatures {
+        compose true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation platform('androidx.compose:compose-bom:2024.12.01')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'dev.chrisbanes.haze:haze-android:1.2.2'
+}
