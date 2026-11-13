@@ -1,6 +1,5 @@
 package com.yehu.liquid
 
-import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -173,8 +172,11 @@ fun PantallaLista(tipo: Lista) {
                 TextButton({
                     if (tipo == Lista.HISTORIAL) {
                         Historial.borrarTodo(ctx)
-                        android.webkit.CookieManager.getInstance().removeAllCookies(null)
-                        android.webkit.WebStorage.getInstance().deleteAllData()
+                        Motor.de(ctx).storageController.clearData(
+                            org.mozilla.geckoview.StorageController.ClearFlags.COOKIES or
+                                org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA or
+                                org.mozilla.geckoview.StorageController.ClearFlags.ALL_CACHES
+                        )
                     } else {
                         Descargas.borrarLista(ctx)
                     }
@@ -248,16 +250,13 @@ private fun FilaDescarga(d: Descarga, onBorrar: () -> Unit, onClick: () -> Unit)
 }
 
 private fun abrirDescarga(ctx: Context, d: Descarga) {
-    val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-    val uri = runCatching { dm.getUriForDownloadedFile(d.id) }.getOrNull()
-    if (uri == null) {
-        /* Si aún se está descargando o ya no existe, abre la lista de descargas del sistema */
-        runCatching { ctx.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onFailure { Toast.makeText(ctx, "El archivo todavía no está listo", Toast.LENGTH_SHORT).show() }
+    if (d.archivo.isEmpty()) {
+        Toast.makeText(ctx, "El archivo todavía no está listo", Toast.LENGTH_SHORT).show()
         return
     }
-    val tipo = dm.getMimeTypeForDownloadedFile(d.id) ?: "*/*"
-    val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, tipo).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val i = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(android.net.Uri.parse(d.archivo), d.tipo.ifEmpty { "*/*" })
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { ctx.startActivity(i) }
         .onFailure { Toast.makeText(ctx, "No hay una app para abrir este archivo", Toast.LENGTH_SHORT).show() }
 }

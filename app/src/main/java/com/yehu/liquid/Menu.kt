@@ -69,7 +69,7 @@ fun MenuNavegador(p: Pestana) {
                 }
                 BotonMenu(IC_RECARGAR, "Recargar", !p.enInicio, Modifier.weight(1f)) {
                     cerrar()
-                    p.web?.reload()
+                    p.sesion?.reload()
                 }
                 BotonMenu(IC_COMPARTIR, "Compartir", !p.enInicio, Modifier.weight(1f)) {
                     cerrar()
@@ -106,6 +106,27 @@ fun MenuNavegador(p: Pestana) {
             FilaMenu(IC_PRIVADO, "Pestaña privada nueva") {
                 cerrar()
                 Navegador.nueva(true)
+            }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 18.dp), color = esquema.onSurface.copy(alpha = 0.08f))
+            /* Bloqueador de anuncios (uBlock Origin) */
+            val estado = Bloqueador.estado
+            FilaMenu(
+                IC_ESCUDO,
+                when (estado) {
+                    Bloqueador.Estado.ACTIVO -> "Bloqueador de anuncios: activado"
+                    Bloqueador.Estado.APAGADO -> "Bloqueador de anuncios: apagado"
+                    Bloqueador.Estado.INSTALANDO, Bloqueador.Estado.BUSCANDO -> "Instalando el bloqueador…"
+                    Bloqueador.Estado.ERROR -> "Instalar el bloqueador de anuncios"
+                }
+            ) {
+                Bloqueador.alternar()
+            }
+            val ajustes = Bloqueador.ajustes
+            if (estado == Bloqueador.Estado.ACTIVO && ajustes != null) {
+                FilaMenu(IC_AJUSTES, "Ajustes de uBlock Origin") {
+                    cerrar()
+                    Navegador.nueva(false, ajustes)
+                }
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 18.dp), color = esquema.onSurface.copy(alpha = 0.08f))
             FilaMenu(IC_ESTRELLA, "Favoritos") {

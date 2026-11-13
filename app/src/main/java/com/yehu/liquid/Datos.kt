@@ -135,8 +135,8 @@ object Historial {
             .map { (host, visitas) -> Sitio("https://$host", visitas.first().titulo.ifBlank { host }) }
 }
 
-/* Descargas hechas desde el navegador (el archivo lo guarda Android en la carpeta Descargas) */
-data class Descarga(val id: Long, val nombre: String, val url: String, val cuando: Long)
+/* Descargas hechas desde el navegador (los archivos quedan en la carpeta Descargas) */
+data class Descarga(val id: Long, val nombre: String, val url: String, val cuando: Long, val archivo: String = "", val tipo: String = "")
 
 object Descargas {
     var version by mutableIntStateOf(0)
@@ -146,7 +146,7 @@ object Descargas {
         val arr = JSONArray(ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("descargas", "[]") ?: "[]")
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
-            Descarga(o.optLong("id"), o.optString("nombre"), o.optString("url"), o.optLong("cuando"))
+            Descarga(o.optLong("id"), o.optString("nombre"), o.optString("url"), o.optLong("cuando"), o.optString("archivo"), o.optString("tipo"))
         }
     } catch (e: Exception) {
         emptyList()
@@ -154,7 +154,12 @@ object Descargas {
 
     private fun guardar(ctx: Context, l: List<Descarga>) {
         val arr = JSONArray()
-        l.forEach { arr.put(JSONObject().put("id", it.id).put("nombre", it.nombre).put("url", it.url).put("cuando", it.cuando)) }
+        l.forEach {
+            arr.put(
+                JSONObject().put("id", it.id).put("nombre", it.nombre).put("url", it.url).put("cuando", it.cuando)
+                    .put("archivo", it.archivo).put("tipo", it.tipo)
+            )
+        }
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString("descargas", arr.toString()).apply()
         version++
     }
@@ -178,6 +183,30 @@ object Iconos {
         return memoria.getOrPut(host) {
             val f = archivo(ctx, host)
             if (f.exists()) runCatching { BitmapFactory.decodeFile(f.path) }.getOrNull() else null
+        }
+    }
+
+    private val pedidos = HashSet<String>()
+    private val hilos = java.util.concurrent.Executors.newFixedThreadPool(2)
+    private val principal = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /* Pide el ícono del sitio al servicio de íconos de DuckDuckGo */
+    fun cargar(ctx: Context, url: String, alTerminar: (Bitmap) -> Unit) {
+        val host = hostDe(url).ifEmpty { return }
+        if (!pedidos.add(host)) return
+        hilos.execute {
+            val b = runCatching {
+                val c = java.net.URL("https://icons.duckduckgo.com/ip3/$host.ico").openConnection() as java.net.HttpURLConnection
+                c.connectTimeout = 4000
+                c.readTimeout = 4000
+                val bytes = c.inputStream.use { it.readBytes() }
+                c.disconnect()
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }.getOrNull()
+            if (b != null && b.width >= 8) principal.post {
+                guardar(ctx, url, b)
+                alTerminar(b)
+            }
         }
     }
 

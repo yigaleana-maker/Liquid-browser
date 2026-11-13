@@ -1,21 +1,12 @@
 package com.yehu.liquid
 
-import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.Uri
-import android.os.Message
-import android.view.View
-import android.view.ViewGroup
-import android.webkit.CookieManager
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebSettings
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -23,11 +14,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.webkit.ProfileStore
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
+import org.mozilla.geckoview.AllowOrDeny
+import org.mozilla.geckoview.ContentBlocking
+import org.mozilla.geckoview.GeckoResult
+import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebResponse
 
-/* Una pestaña: su página, su vista previa para la cuadrícula y su WebView (se crea al usarla) */
+/* Una pestaña: su página, su vista previa para la cuadrícula y su sesión de Firefox (se crea al usarla) */
 class Pestana(val privada: Boolean, url: String = "", titulo: String = "") {
     val id = siguienteId++
     var url by mutableStateOf(url)
@@ -37,28 +34,58 @@ class Pestana(val privada: Boolean, url: String = "", titulo: String = "") {
     var progreso by mutableIntStateOf(100)
     var puedeAtras by mutableStateOf(false)
     var puedeAdelante by mutableStateOf(false)
+    var segura by mutableStateOf(false)
     var escritorio by mutableStateOf(false)
 
-    /* En la página de inicio (sin WebView) */
+    /* En la página de inicio (sin sesión) */
     val enInicio: Boolean get() = url.isEmpty()
 
     /* Si la pestaña empezó en Inicio, "atrás" desde la primera página vuelve ahí */
     var volverAInicio = false
-    var web: WebView? = null
+    var sesion: GeckoSession? = null
 
     companion object {
         private var siguienteId = 1L
     }
 }
 
-/* Lo que la pantalla le pide a la actividad: elegir archivos, video en pantalla completa, apps externas */
+/* Lo que la pantalla le pide a la actividad */
 interface Anfitrion {
-    fun elegirArchivos(callback: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean
-    fun descargar(url: String, agente: String?, disposicion: String?, tipo: String?, privada: Boolean)
+    fun elegirArchivos(prompt: GeckoSession.PromptDelegate.FilePrompt, resultado: GeckoResult<GeckoSession.PromptDelegate.PromptResponse>)
+    fun descargar(respuesta: WebResponse, privada: Boolean)
     fun abrirFuera(intent: Intent): Boolean
+    fun menuContextual(p: Pestana, elemento: GeckoSession.ContentDelegate.ContextElement)
 }
 
-private const val PERFIL_PRIVADO = "privado"
+/* El motor de Firefox (GeckoView): uno solo para toda la app */
+object Motor {
+    private var runtime: GeckoRuntime? = null
+
+    fun de(ctx: Context): GeckoRuntime = runtime ?: run {
+        /* Protección contra rastreo de Firefox: bloquea rastreadores, criptomineros y huellas digitales,
+           y aísla las cookies de cada sitio (Protección total de cookies) */
+        val bloqueo = ContentBlocking.Settings.Builder()
+            .antiTracking(
+                ContentBlocking.AntiTracking.DEFAULT or ContentBlocking.AntiTracking.CRYPTOMINING or
+                    ContentBlocking.AntiTracking.FINGERPRINTING or ContentBlocking.AntiTracking.EMAIL
+            )
+            .enhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.DEFAULT)
+            .safeBrowsing(ContentBlocking.SafeBrowsing.DEFAULT)
+            .cookieBehavior(ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS)
+            .cookieBehaviorPrivateMode(ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS)
+            .queryParameterStrippingEnabled(true)
+            .queryParameterStrippingPrivateBrowsingEnabled(true)
+            .build()
+        val ajustes = GeckoRuntimeSettings.Builder()
+            .contentBlocking(bloqueo)
+            .consoleOutput(false)
+            .build()
+        GeckoRuntime.create(ctx.applicationContext, ajustes).also {
+            runtime = it
+            Bloqueador.iniciar(ctx.applicationContext, it)
+        }
+    }
+}
 
 object Navegador {
     val pestanas = mutableStateListOf<Pestana>()
@@ -73,12 +100,16 @@ object Navegador {
     var buscandoEnPagina by mutableStateOf(false)
     var resultadosBusqueda by mutableStateOf(0 to 0)
 
-    /* Video en pantalla completa (YouTube y otros) */
-    var pantallaCompleta by mutableStateOf<View?>(null)
-    private var cerrarPantallaCompleta: WebChromeClient.CustomViewCallback? = null
+    /* Video a pantalla completa (YouTube y otros) */
+    var pantallaCompleta by mutableStateOf(false)
 
-    private var actividad: Activity? = null
+    /* El GeckoView que está en pantalla, para las vistas previas */
+    var vistaActual: GeckoView? = null
+
+    var actividad: Activity? = null
+        private set
     private var anfitrion: Anfitrion? = null
+    private val principal = Handler(Looper.getMainLooper())
 
     fun normales() = pestanas.filter { !it.privada }
     fun privadas() = pestanas.filter { it.privada }
@@ -86,27 +117,20 @@ object Navegador {
     fun iniciar(act: Activity, a: Anfitrion) {
         actividad = act
         anfitrion = a
-        /* La actividad se volvió a crear: la pestaña actual recupera su WebView */
-        if (pestanas.isNotEmpty()) {
-            actual?.let { seleccionar(it) }
-            return
-        }
-        borrarPerfilPrivado()
+        Motor.de(act)
+        if (pestanas.isNotEmpty()) return
         val (guardadas, i) = PestanasGuardadas.leer(act)
         guardadas.forEach { pestanas.add(Pestana(false, it.url, it.titulo)) }
         if (pestanas.isEmpty()) pestanas.add(Pestana(false))
         seleccionar(pestanas[i.coerceIn(0, pestanas.size - 1)])
     }
 
-    /* Al cerrarse la actividad se liberan los WebView; las pestañas se quedan con su dirección */
-    fun liberar() {
+    fun soltar(act: Activity) {
         guardar()
-        pestanas.forEach { p ->
-            p.web?.let { (it.parent as? ViewGroup)?.removeView(it); it.destroy() }
-            p.web = null
+        if (actividad == act) {
+            actividad = null
+            anfitrion = null
         }
-        actividad = null
-        anfitrion = null
     }
 
     fun guardar() {
@@ -116,13 +140,17 @@ object Navegador {
     }
 
     fun seleccionar(p: Pestana) {
-        actual?.let { if (it != p) { capturar(it); it.web?.onPause() } }
+        val antes = actual
+        if (antes != null && antes != p) {
+            capturar(antes)
+            antes.sesion?.setActive(false)
+        }
         actual = p
         buscandoEnPagina = false
-        if (!p.enInicio && p.web == null) {
-            crearWeb(p)?.loadUrl(p.url)
+        if (!p.enInicio && p.sesion == null) {
+            crearSesion(p)?.loadUri(p.url)
         }
-        p.web?.onResume()
+        p.sesion?.setActive(true)
         guardar()
     }
 
@@ -141,16 +169,16 @@ object Navegador {
         if (url.isEmpty()) return
         if (p.enInicio) p.volverAInicio = true
         p.url = url
-        val w = p.web ?: crearWeb(p)
-        w?.loadUrl(url)
+        p.icono = Iconos.de(actividad ?: return, url)
+        val s = p.sesion ?: crearSesion(p)
+        s?.loadUri(url)
         guardar()
     }
 
     fun cerrar(p: Pestana) {
         val lista = if (p.privada) privadas() else normales()
         val i = lista.indexOf(p)
-        p.web?.let { (it.parent as? ViewGroup)?.removeView(it); it.destroy() }
-        p.web = null
+        cerrarSesion(p)
         pestanas.remove(p)
         if (actual == p) {
             val resto = lista - p
@@ -160,7 +188,6 @@ object Navegador {
                 else -> nueva(false)
             }
         }
-        if (p.privada && privadas().isEmpty()) borrarPerfilPrivado()
         guardar()
     }
 
@@ -168,12 +195,19 @@ object Navegador {
         l.toList().forEach { cerrar(it) }
     }
 
+    private fun cerrarSesion(p: Pestana) {
+        val s = p.sesion ?: return
+        if (vistaActual?.session == s) vistaActual?.releaseSession()
+        runCatching { s.close() }
+        p.sesion = null
+    }
+
     /* Atrás: la página anterior; si no hay y la pestaña empezó en Inicio, vuelve a Inicio */
     fun atras(): Boolean {
         val p = actual ?: return false
-        val w = p.web
-        if (w != null && w.canGoBack()) {
-            w.goBack()
+        val s = p.sesion
+        if (s != null && p.puedeAtras) {
+            s.goBack()
             return true
         }
         if (!p.enInicio && p.volverAInicio) {
@@ -184,8 +218,7 @@ object Navegador {
     }
 
     fun irAInicio(p: Pestana) {
-        p.web?.let { (it.parent as? ViewGroup)?.removeView(it); it.destroy() }
-        p.web = null
+        cerrarSesion(p)
         p.url = ""
         p.titulo = ""
         p.icono = null
@@ -197,212 +230,199 @@ object Navegador {
     }
 
     fun adelante() {
-        actual?.web?.takeIf { it.canGoForward() }?.goForward()
+        val p = actual ?: return
+        if (p.puedeAdelante) p.sesion?.goForward()
     }
 
     fun recargar() {
-        val w = actual?.web ?: return
-        if ((actual?.progreso ?: 100) < 100) w.stopLoading() else w.reload()
+        val p = actual ?: return
+        val s = p.sesion ?: return
+        if (p.progreso in 1..99) s.stop() else s.reload()
     }
 
     fun alternarEscritorio(p: Pestana) {
         p.escritorio = !p.escritorio
-        val w = p.web ?: return
-        aplicarAgente(w, p.escritorio)
-        w.reload()
+        val s = p.sesion ?: return
+        s.settings.userAgentMode =
+            if (p.escritorio) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE
+        s.settings.viewportMode =
+            if (p.escritorio) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE
+        s.reload()
     }
 
-    /* Vista previa de la pestaña para la cuadrícula: lo que se ve en pantalla, a la mitad de tamaño */
+    /* Vista previa de la pestaña para la cuadrícula: lo que se ve en pantalla, más chiquito */
     fun capturar(p: Pestana) {
-        val w = p.web ?: return
-        val padre = w.parent as? View ?: return
-        if (w.width <= 0 || w.height <= 0) return
+        val v = vistaActual ?: return
+        val s = p.sesion ?: return
+        if (v.session != s || v.width <= 0 || v.height <= 0) return
         runCatching {
-            val esc = 0.5f
-            val bmp = Bitmap.createBitmap((w.width * esc).toInt(), (w.height * esc).toInt(), Bitmap.Config.ARGB_8888)
-            val c = Canvas(bmp)
-            c.scale(esc, esc)
-            c.translate(-w.left.toFloat(), -w.top.toFloat())
-            padre.draw(c)
-            p.vista = bmp.asImageBitmap()
+            v.capturePixels().accept({ bmp ->
+                if (bmp != null && p.sesion == s) {
+                    val chico = Bitmap.createScaledBitmap(bmp, bmp.width / 2, bmp.height / 2, true)
+                    p.vista = chico.asImageBitmap()
+                }
+            }, { })
         }
     }
 
     fun buscarEnPagina(texto: String) {
-        val w = actual?.web ?: return
+        val s = actual?.sesion ?: return
         if (texto.isEmpty()) {
-            w.clearMatches()
+            s.finder.clear()
             resultadosBusqueda = 0 to 0
         } else {
-            w.findAllAsync(texto)
+            s.finder.displayFlags = GeckoSession.FINDER_DISPLAY_HIGHLIGHT_ALL
+            s.finder.find(texto, 0).accept({ r -> if (r != null) resultadosBusqueda = r.current to r.total }, { })
         }
     }
 
     fun siguienteResultado(adelante: Boolean) {
-        actual?.web?.findNext(adelante)
+        val s = actual?.sesion ?: return
+        s.finder.find(null, if (adelante) GeckoSession.FINDER_FIND_FORWARD else GeckoSession.FINDER_FIND_BACKWARDS)
+            .accept({ r -> if (r != null) resultadosBusqueda = r.current to r.total }, { })
     }
 
     fun terminarBusqueda() {
-        actual?.web?.clearMatches()
+        actual?.sesion?.finder?.clear()
         buscandoEnPagina = false
         resultadosBusqueda = 0 to 0
     }
 
     fun salirDePantallaCompleta() {
-        cerrarPantallaCompleta?.onCustomViewHidden()
-        cerrarPantallaCompleta = null
-        pantallaCompleta = null
+        actual?.sesion?.exitFullScreen()
+        pantallaCompleta = false
     }
 
-    private fun borrarPerfilPrivado() {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
-        runCatching {
-            val ps = ProfileStore.getInstance()
-            if (ps.allProfileNames.contains(PERFIL_PRIVADO)) ps.deleteProfile(PERFIL_PRIVADO)
-        }
-    }
-
-    private fun aplicarAgente(w: WebView, escritorio: Boolean) {
-        val normal = WebSettings.getDefaultUserAgent(w.context)
-        w.settings.userAgentString = if (escritorio) {
-            normal.replace(Regex("\\(Linux; Android[^)]*\\)"), "(X11; Linux x86_64)").replace(" Mobile", "")
-        } else {
-            null
-        }
-        w.settings.useWideViewPort = true
-        w.settings.loadWithOverviewMode = escritorio
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun crearWeb(p: Pestana): WebView? {
+    private fun crearSesion(p: Pestana, abrir: Boolean = true): GeckoSession? {
         val act = actividad ?: return null
-        val w = WebView(act)
-        /* Las pestañas privadas usan su propio perfil: cookies y datos aparte, que se borran al cerrarlas */
-        if (p.privada && WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-            runCatching { WebViewCompat.setProfile(w, PERFIL_PRIVADO) }
-        }
-        w.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            useWideViewPort = true
-            mediaPlaybackRequiresUserGesture = true
-            allowFileAccess = false
-            allowContentAccess = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            setSupportMultipleWindows(true)
-            javaScriptCanOpenWindowsAutomatically = false
-            if (p.privada) cacheMode = WebSettings.LOAD_NO_CACHE
-        }
-        if (p.escritorio) aplicarAgente(w, true)
-        runCatching { CookieManager.getInstance().setAcceptThirdPartyCookies(w, !p.privada) }
+        val ajustes = GeckoSessionSettings.Builder()
+            .usePrivateMode(p.privada)
+            .useTrackingProtection(true)
+            .userAgentMode(if (p.escritorio) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+            .viewportMode(if (p.escritorio) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+            .suspendMediaWhenInactive(false)
+            .build()
+        val s = GeckoSession(ajustes)
+        configurar(s, p, act)
+        if (abrir) s.open(Motor.de(act))
+        p.sesion = s
+        return s
+    }
 
-        w.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val u = request.url
-                val esquema = u.scheme?.lowercase() ?: return false
-                if (esquema == "http" || esquema == "https" || esquema == "about" || esquema == "data" ||
-                    esquema == "blob" || esquema == "javascript"
-                ) return false
-                abrirFuera(view, u.toString())
-                return true
-            }
-
-            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-                if (p.web != view) return
-                p.url = url
-                p.icono = favicon ?: Iconos.de(view.context, url)
+    private fun configurar(s: GeckoSession, p: Pestana, ctx: Context) {
+        s.progressDelegate = object : GeckoSession.ProgressDelegate {
+            override fun onPageStart(session: GeckoSession, url: String) {
+                if (p.sesion != session) return
                 p.progreso = 5
-                p.puedeAtras = view.canGoBack()
-                p.puedeAdelante = view.canGoForward()
             }
 
-            override fun onPageFinished(view: WebView, url: String) {
-                if (p.web != view) return
+            override fun onPageStop(session: GeckoSession, success: Boolean) {
+                if (p.sesion != session) return
                 p.progreso = 100
-                p.puedeAtras = view.canGoBack()
-                p.puedeAdelante = view.canGoForward()
-                if (p == actual) guardar()
+                if (p == actual) {
+                    guardar()
+                    principal.postDelayed({ if (p == actual) capturar(p) }, 800)
+                }
             }
 
-            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
-                if (p.web != view) return
-                p.url = url
-                p.puedeAtras = view.canGoBack()
-                p.puedeAdelante = view.canGoForward()
-                if (!p.privada && !isReload) Historial.agregar(view.context, url, view.title.orEmpty())
+            override fun onProgressChange(session: GeckoSession, progress: Int) {
+                if (p.sesion == session) p.progreso = progress.coerceAtLeast(5)
+            }
+
+            override fun onSecurityChange(session: GeckoSession, securityInfo: GeckoSession.ProgressDelegate.SecurityInformation) {
+                if (p.sesion == session) p.segura = securityInfo.isSecure
             }
         }
 
-        w.webChromeClient = object : WebChromeClient() {
-            override fun onProgressChanged(view: WebView, newProgress: Int) {
-                if (p.web == view) p.progreso = newProgress
+        s.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onLocationChange(
+                session: GeckoSession,
+                url: String?,
+                perms: MutableList<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
+            ) {
+                if (p.sesion != session || url == null || url == "about:blank") return
+                val otroSitio = hostDe(url) != hostDe(p.url)
+                p.url = url
+                if (otroSitio || p.icono == null) {
+                    p.icono = Iconos.de(ctx, url)
+                    if (p.icono == null && !p.privada) Iconos.cargar(ctx, url) { b -> if (hostDe(p.url) == hostDe(url)) p.icono = b }
+                }
+                if (!p.privada) Historial.agregar(ctx, url, p.titulo.takeIf { !otroSitio }.orEmpty())
             }
 
-            override fun onReceivedTitle(view: WebView, title: String?) {
-                if (p.web != view) return
-                val t = title.orEmpty()
-                p.titulo = if (t.startsWith("http") || t == view.url) "" else t
-                if (!p.privada) Historial.actualizarTitulo(view.context, view.url.orEmpty(), p.titulo)
+            override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
+                if (p.sesion == session) p.puedeAtras = canGoBack
             }
 
-            override fun onReceivedIcon(view: WebView, icon: Bitmap?) {
-                if (p.web != view || icon == null) return
-                p.icono = icon
-                if (!p.privada) Iconos.guardar(view.context, view.url.orEmpty(), icon)
+            override fun onCanGoForward(session: GeckoSession, canGoForward: Boolean) {
+                if (p.sesion == session) p.puedeAdelante = canGoForward
             }
 
-            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                cerrarPantallaCompleta?.onCustomViewHidden()
-                cerrarPantallaCompleta = callback
-                pantallaCompleta = view
+            /* intent://, mailto:, tel:, market: … se abren con la app que corresponda */
+            override fun onLoadRequest(session: GeckoSession, request: GeckoSession.NavigationDelegate.LoadRequest): GeckoResult<AllowOrDeny>? {
+                val esquema = Uri.parse(request.uri).scheme?.lowercase() ?: return null
+                if (esquema in ESQUEMAS_WEB) return null
+                abrirFuera(session, request.uri)
+                return GeckoResult.fromValue(AllowOrDeny.DENY)
             }
 
-            override fun onHideCustomView() {
-                cerrarPantallaCompleta = null
-                pantallaCompleta = null
-            }
-
-            override fun onShowFileChooser(
-                view: WebView,
-                filePathCallback: ValueCallback<Array<Uri>>,
-                fileChooserParams: FileChooserParams
-            ): Boolean = anfitrion?.elegirArchivos(filePathCallback, fileChooserParams) ?: false
-
-            /* Enlaces que piden ventana nueva (target="_blank"): se abren en una pestaña nueva */
-            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
-                if (!isUserGesture) return false
+            /* Enlaces que piden ventana nueva (target="_blank", window.open): pestaña nueva al lado */
+            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
                 val nueva = Pestana(p.privada)
+                nueva.escritorio = p.escritorio
+                nueva.url = uri.ifEmpty { "about:blank" }
                 val i = pestanas.indexOf(p) + 1
                 pestanas.add(i.coerceIn(0, pestanas.size), nueva)
-                val wn = crearWeb(nueva) ?: return false
-                nueva.url = "about:blank"
-                seleccionar(nueva)
-                val transporte = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                transporte.webView = wn
-                resultMsg.sendToTarget()
-                return true
-            }
-
-            override fun onCloseWindow(window: WebView) {
-                pestanas.firstOrNull { it.web == window }?.let { cerrar(it) }
+                val sn = crearSesion(nueva, abrir = false) ?: return null
+                principal.post { seleccionar(nueva) }
+                return GeckoResult.fromValue(sn)
             }
         }
 
-        w.setDownloadListener { url, agente, disposicion, tipo, _ ->
-            anfitrion?.descargar(url, agente, disposicion, tipo, p.privada)
+        s.contentDelegate = object : GeckoSession.ContentDelegate {
+            override fun onTitleChange(session: GeckoSession, title: String?) {
+                if (p.sesion != session) return
+                val t = title.orEmpty()
+                p.titulo = if (t.startsWith("http") || t == p.url) "" else t
+                if (!p.privada) Historial.actualizarTitulo(ctx, p.url, p.titulo)
+            }
+
+            override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+                if (p == actual) pantallaCompleta = fullScreen
+            }
+
+            override fun onCloseRequest(session: GeckoSession) {
+                if (p.sesion == session) principal.post { cerrar(p) }
+            }
+
+            override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
+                anfitrion?.descargar(response, p.privada)
+            }
+
+            override fun onContextMenu(session: GeckoSession, screenX: Int, screenY: Int, element: GeckoSession.ContentDelegate.ContextElement) {
+                if (element.linkUri != null || element.srcUri != null) anfitrion?.menuContextual(p, element)
+            }
+
+            /* Si el proceso de la página se cae, la pestaña se vuelve a abrir en la misma dirección */
+            override fun onCrash(session: GeckoSession) = reabrir(session)
+            override fun onKill(session: GeckoSession) = reabrir(session)
+
+            private fun reabrir(session: GeckoSession) {
+                if (p.sesion != session) return
+                principal.post {
+                    cerrarSesion(p)
+                    if (p == actual && !p.enInicio) crearSesion(p)?.loadUri(p.url)
+                }
+            }
         }
-        w.setFindListener { activo, total, terminado ->
-            if (terminado && p == actual) resultadosBusqueda = (if (total == 0) 0 else activo + 1) to total
-        }
-        p.web = w
-        return w
+
+        s.promptDelegate = Avisos(this::actividadActual, { anfitrion })
     }
 
-    /* intent://, mailto:, tel:, market: … se abren con la app que corresponda */
-    private fun abrirFuera(view: WebView, url: String) {
+    private fun actividadActual(): Activity? = actividad
+
+    private fun abrirFuera(session: GeckoSession, url: String) {
         val a = anfitrion ?: return
         val intent = runCatching {
             if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
@@ -412,9 +432,11 @@ object Navegador {
         intent.component = null
         intent.selector = null
         if (!a.abrirFuera(intent)) {
-            intent.getStringExtra("browser_fallback_url")?.let { view.loadUrl(it) }
+            intent.getStringExtra("browser_fallback_url")?.let { session.loadUri(it) }
         }
     }
+
+    private val ESQUEMAS_WEB = setOf("http", "https", "about", "data", "blob", "javascript", "moz-extension", "resource")
 }
 
 /* Pantallas de lista que se abren desde el menú */

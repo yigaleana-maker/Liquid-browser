@@ -77,8 +77,8 @@ fun PaginaInicio(p: Pestana, modifier: Modifier = Modifier) {
             )
             if (p.privada) {
                 Text(
-                    "Lo que visites aquí no se guarda en el historial, y al cerrar las pestañas privadas " +
-                        "se borran sus cookies y datos de los sitios.",
+                    "Lo que visites aquí no se guarda en el historial, y al cerrar todas las pestañas privadas " +
+                        "Firefox borra sus cookies y datos de los sitios.",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = esquema.onBackground.copy(alpha = 0.7f),
@@ -86,7 +86,7 @@ fun PaginaInicio(p: Pestana, modifier: Modifier = Modifier) {
                 )
             } else {
                 Text(
-                    "Busca con DuckDuckGo o escribe una dirección abajo.",
+                    "Busca con DuckDuckGo o escribe una dirección abajo. Con el motor de Firefox y uBlock Origin.",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = esquema.onBackground.copy(alpha = 0.65f),

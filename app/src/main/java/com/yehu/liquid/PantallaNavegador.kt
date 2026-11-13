@@ -1,7 +1,6 @@
 package com.yehu.liquid
 
-import android.view.ViewGroup
-import android.widget.FrameLayout
+import org.mozilla.geckoview.GeckoView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
@@ -87,25 +86,27 @@ fun PantallaNavegador(p: Pestana) {
                     .hazeSource(haze)
             )
         } else {
+            /* En pantalla completa (videos) la página ocupa todo y la barra se esconde */
+            val completa = Navegador.pantallaCompleta
             Box(
-                Modifier
+                if (completa) Modifier.fillMaxSize().background(Color.Black)
+                else Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(bottom = if (teclado) 0.dp else ALTO_BARRA)
                     .windowInsetsPadding(if (teclado) WindowInsets.ime else WindowInsets.navigationBars)
             ) {
                 AndroidView(
-                    factory = { ctx -> FrameLayout(ctx) },
+                    factory = { ctx -> GeckoView(ctx).also { Navegador.vistaActual = it } },
                     modifier = Modifier.fillMaxSize(),
-                    update = { cont ->
-                        val w = p.web
-                        if (w != null && w.parent != cont) {
-                            (w.parent as? ViewGroup)?.removeView(w)
-                            cont.removeAllViews()
-                            cont.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                        } else if (w == null) {
-                            cont.removeAllViews()
-                        }
+                    onRelease = { v ->
+                        v.releaseSession()
+                        if (Navegador.vistaActual == v) Navegador.vistaActual = null
+                    },
+                    update = { v ->
+                        Navegador.vistaActual = v
+                        val s = p.sesion
+                        if (s != null && v.session != s) v.setSession(s)
                     }
                 )
                 BarraProgreso(p.progreso, Modifier.align(Alignment.TopCenter))
@@ -113,7 +114,7 @@ fun PantallaNavegador(p: Pestana) {
         }
 
         /* Con el teclado abierto (escribiendo en una página) la barra se esconde */
-        if (!teclado || Navegador.buscandoEnPagina) {
+        if ((!teclado || Navegador.buscandoEnPagina) && !(Navegador.pantallaCompleta && !p.enInicio)) {
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -213,7 +214,7 @@ private fun BarraDireccion(p: Pestana, haze: HazeState?) {
                 Modifier.fillMaxWidth().padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (!p.enInicio && p.url.startsWith("https")) {
+                if (!p.enInicio && p.segura) {
                     Icon(IC_CANDADO, "Conexión segura", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
                     Spacer(Modifier.width(6.dp))
                 } else if (p.enInicio) {

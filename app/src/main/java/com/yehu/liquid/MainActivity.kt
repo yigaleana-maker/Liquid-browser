@@ -1,19 +1,20 @@
 package com.yehu.liquid
 
-import android.app.DownloadManager
+import android.app.AlertDialog
 import android.app.SearchManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
-import android.view.ViewGroup
-import android.webkit.CookieManager
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
+import android.webkit.MimeTypeMap
 import android.webkit.URLUtil
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
-import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -37,18 +38,37 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.util.concurrent.Executors
+import org.mozilla.geckoview.GeckoResult
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSession.PromptDelegate.FilePrompt
+import org.mozilla.geckoview.GeckoSession.PromptDelegate.PromptResponse
+import org.mozilla.geckoview.WebResponse
 
 class MainActivity : ComponentActivity(), Anfitrion {
 
-    private var esperandoArchivos: ValueCallback<Array<Uri>>? = null
+    private var esperandoArchivos: Pair<FilePrompt, GeckoResult<PromptResponse>>? = null
     private val elegir = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-        esperandoArchivos?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
+        val (prompt, resultado) = esperandoArchivos ?: return@registerForActivityResult
         esperandoArchivos = null
+        val datos = r.data
+        val uris = buildList {
+            datos?.clipData?.let { c -> for (i in 0 until c.itemCount) add(c.getItemAt(i).uri) }
+            if (isEmpty()) datos?.data?.let { add(it) }
+        }
+        resultado.complete(
+            when {
+                r.resultCode != RESULT_OK || uris.isEmpty() -> prompt.dismiss()
+                prompt.type == FilePrompt.Type.MULTIPLE -> prompt.confirm(this, uris.toTypedArray())
+                else -> prompt.confirm(this, uris.first())
+            }
+        )
     }
+    private val hilos = Executors.newSingleThreadExecutor()
+    private val principal = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -63,7 +83,7 @@ class MainActivity : ComponentActivity(), Anfitrion {
             val oscuro = privado || isSystemInDarkTheme()
             SideEffect {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
-                    isAppearanceLightStatusBars = !oscuro && Navegador.pantallaCompleta == null
+                    isAppearanceLightStatusBars = !oscuro
                     isAppearanceLightNavigationBars = !oscuro
                 }
             }
@@ -97,8 +117,16 @@ class MainActivity : ComponentActivity(), Anfitrion {
                 p?.let { MenuNavegador(it) }
             }
             if (Navegador.editando && p != null) EditorDireccion(p)
+        }
 
-            Navegador.pantallaCompleta?.let { v -> PantallaCompleta(v) }
+        /* Video a pantalla completa: sin barras del sistema */
+        if (Navegador.pantallaCompleta) {
+            DisposableEffect(Unit) {
+                val c = WindowCompat.getInsetsController(window, window.decorView)
+                c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                c.hide(WindowInsetsCompat.Type.systemBars())
+                onDispose { c.show(WindowInsetsCompat.Type.systemBars()) }
+            }
         }
 
         BackHandler { alAtras() }
@@ -107,7 +135,7 @@ class MainActivity : ComponentActivity(), Anfitrion {
     /* Atrás: cierra lo que esté encima; si no hay nada, la página anterior */
     private fun alAtras() {
         when {
-            Navegador.pantallaCompleta != null -> Navegador.salirDePantallaCompleta()
+            Navegador.pantallaCompleta -> Navegador.salirDePantallaCompleta()
             Navegador.menuAbierto -> Navegador.menuAbierto = false
             Navegador.editando -> Navegador.editando = false
             Navegador.lista != null -> Navegador.lista = null
@@ -116,27 +144,6 @@ class MainActivity : ComponentActivity(), Anfitrion {
             Navegador.atras() -> Unit
             else -> moveTaskToBack(true)
         }
-    }
-
-    /* El video a pantalla completa, sin barras del sistema */
-    @Composable
-    private fun PantallaCompleta(v: android.view.View) {
-        DisposableEffect(v) {
-            val c = WindowCompat.getInsetsController(window, window.decorView)
-            c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            c.hide(WindowInsetsCompat.Type.systemBars())
-            onDispose { c.show(WindowInsetsCompat.Type.systemBars()) }
-        }
-        AndroidView(
-            factory = { ctx ->
-                FrameLayout(ctx).apply {
-                    setBackgroundColor(android.graphics.Color.BLACK)
-                    (v.parent as? ViewGroup)?.removeView(v)
-                    addView(v, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -165,39 +172,109 @@ class MainActivity : ComponentActivity(), Anfitrion {
         if (p != null && p.enInicio && !p.privada) Navegador.abrir(p, texto) else Navegador.nueva(false, texto)
     }
 
-    override fun elegirArchivos(callback: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
-        esperandoArchivos?.onReceiveValue(null)
-        esperandoArchivos = callback
-        return try {
-            elegir.launch(params.createIntent())
-            true
+    override fun elegirArchivos(prompt: FilePrompt, resultado: GeckoResult<PromptResponse>) {
+        esperandoArchivos?.let { (pr, r) -> r.complete(pr.dismiss()) }
+        esperandoArchivos = prompt to resultado
+        val tipos = prompt.mimeTypes?.filter { it.isNotBlank() }.orEmpty()
+        val i = Intent(Intent.ACTION_GET_CONTENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType(if (tipos.size == 1) tipos[0] else "*/*")
+        if (tipos.size > 1) i.putExtra(Intent.EXTRA_MIME_TYPES, tipos.toTypedArray())
+        if (prompt.type == FilePrompt.Type.MULTIPLE) i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        try {
+            elegir.launch(Intent.createChooser(i, null))
         } catch (e: ActivityNotFoundException) {
             esperandoArchivos = null
-            false
+            resultado.complete(prompt.dismiss())
         }
     }
 
-    override fun descargar(url: String, agente: String?, disposicion: String?, tipo: String?, privada: Boolean) {
-        if (!url.startsWith("http")) {
-            Toast.makeText(this, "Este archivo no se puede descargar", Toast.LENGTH_SHORT).show()
+    /* Las descargas se guardan en la carpeta Descargas del teléfono */
+    override fun descargar(respuesta: WebResponse, privada: Boolean) {
+        val cuerpo = respuesta.body
+        if (cuerpo == null) {
+            Toast.makeText(this, "No se pudo descargar", Toast.LENGTH_SHORT).show()
             return
         }
-        try {
-            val nombre = URLUtil.guessFileName(url, disposicion, tipo)
-            val r = DownloadManager.Request(Uri.parse(url))
-                .setTitle(nombre)
-                .setMimeType(tipo)
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, nombre)
-            if (!privada) CookieManager.getInstance().getCookie(url)?.let { r.addRequestHeader("Cookie", it) }
-            agente?.let { r.addRequestHeader("User-Agent", it) }
-            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val id = dm.enqueue(r)
-            Descargas.agregar(this, Descarga(id, nombre, url, System.currentTimeMillis()))
-            Toast.makeText(this, "Descargando $nombre", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "No se pudo descargar", Toast.LENGTH_SHORT).show()
+        val encabezados = respuesta.headers.mapKeys { it.key.lowercase() }
+        val tipoServidor = encabezados["content-type"]?.substringBefore(';')?.trim()
+        val nombre = URLUtil.guessFileName(respuesta.uri, encabezados["content-disposition"], tipoServidor)
+        val tipo = tipoServidor?.takeIf { it != "application/octet-stream" }
+            ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(nombre.substringAfterLast('.', "").lowercase())
+            ?: "application/octet-stream"
+        Toast.makeText(this, "Descargando $nombre", Toast.LENGTH_SHORT).show()
+        val ctx = applicationContext
+        hilos.execute {
+            val resultado = runCatching {
+                val valores = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, nombre)
+                    put(MediaStore.Downloads.MIME_TYPE, tipo)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val r = ctx.contentResolver
+                val uri = r.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, valores) ?: error("sin destino")
+                try {
+                    r.openOutputStream(uri)?.use { salida -> cuerpo.use { it.copyTo(salida, 64 * 1024) } } ?: error("sin salida")
+                    r.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                } catch (e: Exception) {
+                    r.delete(uri, null, null)
+                    throw e
+                }
+                uri
+            }
+            principal.post {
+                resultado.onSuccess { uri ->
+                    val ahora = System.currentTimeMillis()
+                    Descargas.agregar(ctx, Descarga(ahora, nombre, if (privada) "" else respuesta.uri, ahora, uri.toString(), tipo))
+                    Toast.makeText(ctx, "Listo: $nombre está en Descargas", Toast.LENGTH_SHORT).show()
+                }.onFailure {
+                    Toast.makeText(ctx, "No se pudo descargar $nombre", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
+    }
+
+    /* Mantener presionado un enlace o una imagen */
+    override fun menuContextual(p: Pestana, elemento: GeckoSession.ContentDelegate.ContextElement) {
+        val enlace = elemento.linkUri
+        val imagen = elemento.srcUri?.takeIf { elemento.type == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE }
+        val opciones = ArrayList<Pair<String, () -> Unit>>()
+        if (enlace != null) {
+            opciones += "Abrir en pestaña nueva" to { abrirAlLado(enlace, p.privada) }
+            if (!p.privada) opciones += "Abrir en pestaña privada" to { abrirAlLado(enlace, true) }
+            opciones += "Copiar enlace" to { copiar(enlace) }
+            opciones += "Compartir enlace" to { compartir(enlace) }
+        }
+        if (imagen != null) {
+            opciones += "Abrir imagen en pestaña nueva" to { abrirAlLado(imagen, p.privada) }
+            opciones += "Copiar dirección de la imagen" to { copiar(imagen) }
+            opciones += "Compartir imagen" to { compartir(imagen) }
+        }
+        if (opciones.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(enlace ?: imagen)
+            .setItems(opciones.map { it.first }.toTypedArray()) { _, i -> opciones[i].second() }
+            .show()
+    }
+
+    /* Una pestaña nueva en segundo plano (si es del mismo tipo), al lado de la actual */
+    private fun abrirAlLado(url: String, privada: Boolean) {
+        val actual = Navegador.actual
+        val nueva = Navegador.nueva(privada, url)
+        nueva.volverAInicio = false
+        if (actual != null && privada == actual.privada) {
+            Navegador.seleccionar(actual)
+            Toast.makeText(this, "Se abrió en una pestaña nueva", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun copiar(t: String) {
+        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Enlace", t))
+    }
+
+    private fun compartir(t: String) {
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, t), null))
     }
 
     override fun abrirFuera(intent: Intent): Boolean = try {
@@ -211,18 +288,11 @@ class MainActivity : ComponentActivity(), Anfitrion {
 
     override fun onPause() {
         super.onPause()
-        Navegador.actual?.web?.onPause()
         Navegador.guardar()
-        CookieManager.getInstance().flush()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        Navegador.actual?.web?.onResume()
     }
 
     override fun onDestroy() {
-        Navegador.liberar()
+        Navegador.soltar(this)
         super.onDestroy()
     }
 }
