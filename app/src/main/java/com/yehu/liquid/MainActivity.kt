@@ -107,13 +107,13 @@ class MainActivity : ComponentActivity(), Anfitrion {
     /* Atrás: cierra lo que esté encima; si no hay nada, la página anterior */
     private fun alAtras() {
         when {
-                Navegador.pantallaCompleta != null -> Navegador.salirDePantallaCompleta()
-                Navegador.menuAbierto -> Navegador.menuAbierto = false
-                Navegador.editando -> Navegador.editando = false
-                Navegador.lista != null -> Navegador.lista = null
-                Navegador.buscandoEnPagina -> Navegador.terminarBusqueda()
-                Navegador.verPestanas -> Navegador.verPestanas = false
-                Navegador.atras() -> Unit
+            Navegador.pantallaCompleta != null -> Navegador.salirDePantallaCompleta()
+            Navegador.menuAbierto -> Navegador.menuAbierto = false
+            Navegador.editando -> Navegador.editando = false
+            Navegador.lista != null -> Navegador.lista = null
+            Navegador.buscandoEnPagina -> Navegador.terminarBusqueda()
+            Navegador.verPestanas -> Navegador.verPestanas = false
+            Navegador.atras() -> Unit
             else -> moveTaskToBack(true)
         }
     }
