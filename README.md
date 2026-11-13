@@ -14,6 +14,8 @@ Busca con DuckDuckGo.
 - **Motor de Firefox** con su protección contra rastreo (rastreadores, criptomineros, huellas
   digitales y Protección total de cookies).
 - **Bloqueador de anuncios uBlock Origin**, que se instala solo la primera vez (se prende y apaga desde ⋯).
+- **Modo oscuro:** tema Automático, Claro u Oscuro (⋯ → Tema), y "Oscurecer todas las páginas"
+  con la extensión Dark Reader, que se instala al prenderlo.
 - **Pestañas privadas:** se ven en oscuro, no guardan historial y Firefox borra sus cookies y datos
   al cerrarlas.
 - **Inicio** con tus favoritos y los sitios que más visitas.

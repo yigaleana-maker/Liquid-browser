@@ -82,7 +82,9 @@ object Motor {
             .build()
         GeckoRuntime.create(ctx.applicationContext, ajustes).also {
             runtime = it
-            Bloqueador.iniciar(ctx.applicationContext, it)
+            Apariencia.cargar(ctx)
+            Apariencia.aplicar(it)
+            Extensiones.iniciar(it)
         }
     }
 }

@@ -15,6 +15,9 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -53,10 +56,12 @@ fun MenuNavegador(p: Pestana) {
             Modifier
                 .align(Alignment.BottomCenter)
                 .windowInsetsPadding(WindowInsets.navigationBars)
+                .windowInsetsPadding(WindowInsets.statusBars)
                 .padding(12.dp)
                 .fillMaxWidth()
                 .vidrio(RoundedCornerShape(30.dp), null)
                 .combinedClickableSinEfecto { }
+                .verticalScroll(rememberScrollState())
                 .padding(vertical = 10.dp)
         ) {
             Row(
@@ -109,25 +114,20 @@ fun MenuNavegador(p: Pestana) {
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 18.dp), color = esquema.onSurface.copy(alpha = 0.08f))
             /* Bloqueador de anuncios (uBlock Origin) */
-            val estado = Bloqueador.estado
-            FilaMenu(
-                IC_ESCUDO,
-                when (estado) {
-                    Bloqueador.Estado.ACTIVO -> "Bloqueador de anuncios: activado"
-                    Bloqueador.Estado.APAGADO -> "Bloqueador de anuncios: apagado"
-                    Bloqueador.Estado.INSTALANDO, Bloqueador.Estado.BUSCANDO -> "Instalando el bloqueador…"
-                    Bloqueador.Estado.ERROR -> "Instalar el bloqueador de anuncios"
-                }
-            ) {
-                Bloqueador.alternar()
-            }
-            val ajustes = Bloqueador.ajustes
-            if (estado == Bloqueador.Estado.ACTIVO && ajustes != null) {
+            val bloqueo = Extensiones.bloqueador
+            FilaMenu(IC_ESCUDO, textoExtension(bloqueo.estado, "Bloqueador de anuncios")) { bloqueo.alternar() }
+            val ajustes = bloqueo.ajustes
+            if (bloqueo.estado == ExtensionFirefox.Estado.ACTIVO && ajustes != null) {
                 FilaMenu(IC_AJUSTES, "Ajustes de uBlock Origin") {
                     cerrar()
                     Navegador.nueva(false, ajustes)
                 }
             }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 18.dp), color = esquema.onSurface.copy(alpha = 0.08f))
+            /* Modo oscuro: el de la app y el de las páginas (Dark Reader) */
+            FilaMenu(IC_TEMA, "Tema: ${Apariencia.tema.nombre}") { Apariencia.siguiente(ctx, Motor.de(ctx)) }
+            val oscuro = Extensiones.oscurecedor
+            FilaMenu(IC_LUNA, textoExtension(oscuro.estado, "Oscurecer todas las páginas")) { oscuro.alternar() }
             HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 18.dp), color = esquema.onSurface.copy(alpha = 0.08f))
             FilaMenu(IC_ESTRELLA, "Favoritos") {
                 cerrar()
@@ -197,4 +197,11 @@ private fun Color.compositeOver(fondo: Color): Color {
         blue = blue * a + fondo.blue * (1 - a),
         alpha = 1f
     )
+}
+
+private fun textoExtension(e: ExtensionFirefox.Estado, nombre: String): String = when (e) {
+    ExtensionFirefox.Estado.ACTIVO -> "$nombre: sí"
+    ExtensionFirefox.Estado.APAGADO -> "$nombre: no"
+    ExtensionFirefox.Estado.INSTALANDO, ExtensionFirefox.Estado.BUSCANDO -> "$nombre: instalando…"
+    ExtensionFirefox.Estado.ERROR -> "$nombre: toca para reintentar"
 }

@@ -80,7 +80,12 @@ class MainActivity : ComponentActivity(), Anfitrion {
             val p = Navegador.actual
             /* Las pestañas privadas se ven en oscuro, para que siempre sepas dónde estás */
             val privado = (p?.privada == true && !Navegador.verPestanas) || (Navegador.verPestanas && Navegador.cuadriculaPrivada)
-            val oscuro = privado || isSystemInDarkTheme()
+            val sistema = isSystemInDarkTheme()
+            val oscuro = privado || when (Apariencia.tema) {
+                Tema.AUTO -> sistema
+                Tema.CLARO -> false
+                Tema.OSCURO -> true
+            }
             SideEffect {
                 WindowCompat.getInsetsController(window, window.decorView).apply {
                     isAppearanceLightStatusBars = !oscuro
